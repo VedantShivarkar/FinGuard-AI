@@ -4,8 +4,8 @@ numpy
 scikit-learn
 torch
 shap
-lightgbm
-openai
-python-dotenv
-matplotlib
 plotly
+python-dotenv
+bcrypt
+authlib
+httpx
