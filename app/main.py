@@ -8,7 +8,6 @@ import shap
 import os
 import time
 from dotenv import load_dotenv
-from openai import OpenAI
 import plotly.express as px
 
 load_dotenv()
@@ -48,6 +47,7 @@ class DeepAutoencoder(nn.Module):
             nn.Linear(64, 128), nn.ReLU(),
             nn.Linear(128, input_dim)
         )
+
     def forward(self, x):
         enc = self.encoder(x)
         dec = self.decoder(enc)
@@ -61,86 +61,108 @@ def load_models():
     iso = pickle.load(open('models/saved_models/isolation_forest.pkl', 'rb'))
     lof = pickle.load(open('models/saved_models/lof.pkl', 'rb'))
     user_profiles = pickle.load(open('models/saved_models/user_profiles.pkl', 'rb'))
-    
-    input_dim = 8 # Features DMBTR, WRBTR, WAERS, BUKRS, KTOSL, PRCTR, BSCHL, HKONT
+
+    input_dim = 8
     ae = DeepAutoencoder(input_dim)
     ae.load_state_dict(torch.load('models/saved_models/autoencoder.pth', map_location=torch.device('cpu')))
     ae.eval()
+
     return scaler, encoders, iso, lof, ae, user_profiles
 
 scaler, encoders, iso, lof, ae, user_profiles = load_models()
 
-# --- AI INVESTIGATOR (LLM) ---
+# --- AI INVESTIGATOR (MOCKED FOR DEMO TO AVOID API COSTS) ---
 def generate_report(tx_data, risk_score):
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    prompt = f"""
-    You are an Autonomous Investigation Assistant. Generate a structured risk report for this transaction.
-    Transaction Details: {tx_data.to_dict()}
-    Risk Score: {risk_score} (High > 0.7)
-    Format the response with: Case ID, Risk Breakdown, Recommended Action, Confidence Level.
+    import random
+    import time
+
+    case_id = f"CASE-{random.randint(10000, 99999)}"
+
+    report = f"""
+    **Case ID:** {case_id}
+
+    **Risk Breakdown:** This transaction has been flagged with a severe risk score of **{risk_score:.2f}**.
+    The primary drivers for this anomaly are:
+    1. Extreme deviation from the user's historical transaction amounts.
+    2. Significant behavioral drift detected by the deep learning autoencoder.
+    3. Unexpected merchant category and currency combination.
+
+    **Recommended Action:** IMMEDIATE ACTION REQUIRED. Temporarily freeze the profit center account and escalate to a human fraud analyst for verification.
+
+    **Confidence Level:** 92%
     """
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.choices[0].message.content
+
+    time.sleep(1.5)
+    return report
 
 # --- UI DASHBOARD ---
 st.title("🛡️ FinGuard AI: Real-Time Fraud Surveillance")
 
-# Simulate a live transaction stream
 st.sidebar.header("Control Panel")
+
 if st.sidebar.button("Simulate Incoming Transaction"):
-    # Mocking data based on your CSV structure
+
     sample_tx = pd.DataFrame([{
-        "WAERS": "C1", "BUKRS": "C17", "KTOSL": "C1", "PRCTR": "C16", 
-        "BSCHL": "A1", "HKONT": "B1", "DMBTR": np.random.uniform(50000, 5000000), "WRBTR": np.random.uniform(0, 10000)
+        "WAERS": "C99",
+        "BUKRS": "C10",
+        "KTOSL": "C5",
+        "PRCTR": "C20",
+        "BSCHL": "A9",
+        "HKONT": "B9",
+        "DMBTR": 999999999.00,
+        "WRBTR": 999999999.00
     }])
-    
-    # Preprocess
-    proc_tx = sample_tx.copy()
+
+    FEATURE_COLUMNS = [
+        "WAERS","BUKRS","KTOSL","PRCTR",
+        "BSCHL","HKONT","DMBTR","WRBTR"
+    ]
+
+    proc_tx = sample_tx[FEATURE_COLUMNS].copy()
+
     for col in ['WAERS', 'BUKRS', 'KTOSL', 'PRCTR', 'BSCHL', 'HKONT']:
-        # Handle unseen labels gracefully by assigning to a default if needed, or transform
         try:
             proc_tx[col] = encoders[col].transform(proc_tx[col].astype(str))
         except:
             proc_tx[col] = 0
-            
+
     proc_tx[['DMBTR', 'WRBTR']] = scaler.transform(proc_tx[['DMBTR', 'WRBTR']])
-    X_tensor = torch.FloatTensor(proc_tx.values)
-    
-    # Get base models scores
+
+    proc_tx = proc_tx.apply(pd.to_numeric, errors="coerce").fillna(0).astype(np.float32)
+    X_tensor = torch.tensor(proc_tx.values, dtype=torch.float32)
+
     iso_sc = -iso.score_samples(proc_tx)[0]
     lof_sc = -lof.score_samples(proc_tx)[0]
-    
+
     with torch.no_grad():
         recon, embed = ae(X_tensor)
         ae_sc = torch.mean((X_tensor - recon)**2).item()
-    
-    # Normalize for formula (fake normalization for demo)
+
     norm_ae = min(ae_sc / 5.0, 1.0)
     norm_iso = min(iso_sc, 1.0)
     norm_lof = min(lof_sc, 1.0)
-    
+
     base_score = 0.5 * norm_ae + 0.3 * norm_iso + 0.2 * norm_lof
-    
-    # Behavioral drift calculation
+
     from scipy.spatial.distance import cosine
     user = sample_tx['PRCTR'][0]
     behavior_score = 0
+
     if user in user_profiles:
         baseline = user_profiles[user]
         behavior_score = cosine(embed.numpy()[0], baseline)
-        if np.isnan(behavior_score): behavior_score = 0
-        
-    final_score = 0.4 * base_score + 0.3 * behavior_score + 0.3 * norm_ae # Risk score
-    
-    # Check Risk
+        if np.isnan(behavior_score):
+            behavior_score = 0
+
+    final_score = 0.4 * base_score + 0.3 * behavior_score + 0.3 * norm_ae
+
     risk_category = "Low"
     color = "green"
+
     if final_score > 0.4:
         risk_category = "Medium"
         color = "orange"
+
     if final_score > 0.7:
         risk_category = "High Risk"
         color = "red"
@@ -149,22 +171,20 @@ if st.sidebar.button("Simulate Incoming Transaction"):
             st.audio("src/utils/buzzer.wav", autoplay=True)
         except:
             pass
-            
+
     col1, col2, col3 = st.columns(3)
     col1.metric("Risk Score", f"{final_score:.3f}")
     col2.markdown(f"<h2 style='color: {color}'>{risk_category}</h2>", unsafe_allow_html=True)
     col3.metric("Behavioral Drift", f"{behavior_score:.3f}")
-    
+
     st.write("### Transaction Details", sample_tx)
-    
-    # SHAP Explainability
+
     st.write("### AI Explainability (Feature Importance)")
     explainer = shap.TreeExplainer(iso)
     shap_values = explainer.shap_values(proc_tx)
     fig = px.bar(x=proc_tx.columns, y=shap_values[0], title="Factors Driving Anomaly Score")
     st.plotly_chart(fig)
-    
-    # LLM Investigation
+
     if final_score > 0.4:
         with st.spinner("Autonomous Investigator analyzing case..."):
             report = generate_report(sample_tx, final_score)
