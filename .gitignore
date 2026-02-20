@@ -1,6 +1,1 @@
 .env
-__pycache__/
-models/saved_models/
-data/raw/
-data/processed/
-.DS_Store
