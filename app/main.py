@@ -70,16 +70,16 @@ if st.session_state["theme"] == "Light":
     st.markdown(light_css, unsafe_allow_html=True)
 
 
-# 6. Routing
+# 6. Routing (Show Login OR Dashboard)
 if not st.session_state["authenticated"]:
     show_login_page()
-
 else:
-    st.title("📊 FinGuard AI Dashboard")
-    st.write(f"Welcome, **{st.session_state.get('user_email', 'User')}**!")
-    st.success("Authentication Module Complete! Ready to build the anomaly detection upload feature.")
+    from app.pages.dashboard import show_dashboard
+    show_dashboard()
 
-    if st.sidebar.button("Logout"):
+    # Logout button in sidebar
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Logout", use_container_width=True):
         st.session_state["authenticated"] = False
         st.session_state["user_email"] = None
         st.rerun()
