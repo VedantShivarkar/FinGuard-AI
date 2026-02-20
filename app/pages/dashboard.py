@@ -5,22 +5,20 @@ import pickle
 import torch
 import plotly.express as px
 import plotly.graph_objects as go
-import os
 from src.models.autoencoder import DeepAutoencoder
 from src.utils.email_sender import send_fraud_alert
+from src.explainability.shap_engine import generate_shap_explanation
+from src.investigation.report_generator import generate_fraud_report
 
-# --- MODEL LOADING (CACHED FOR SPEED) ---
 @st.cache_resource
 def load_ml_models():
-    """Loads the pre-trained models from the saved_models folder."""
     try:
         base = "models/saved_models/"
         scaler = pickle.load(open(base + 'scaler.pkl', 'rb'))
         encoders = pickle.load(open(base + 'encoders.pkl', 'rb'))
         iso = pickle.load(open(base + 'isolation_forest.pkl', 'rb'))
         lof = pickle.load(open(base + 'lof.pkl', 'rb'))
-        
-        ae = DeepAutoencoder(8) # 8 features used during training
+        ae = DeepAutoencoder(8) 
         ae.load_state_dict(torch.load(base + 'autoencoder.pth', map_location=torch.device('cpu')))
         ae.eval()
         return scaler, encoders, iso, lof, ae
@@ -28,47 +26,38 @@ def load_ml_models():
         return None, None, None, None, None
 
 def predict_risk(df, scaler, encoders, iso, lof, ae):
-    """Runs the ensemble AI models on a dataframe."""
     proc_df = df.copy()
-    
-    # 1. Encode Categorical Variables safely
     cat_cols = ['WAERS', 'BUKRS', 'KTOSL', 'PRCTR', 'BSCHL', 'HKONT']
     for col in cat_cols:
-        # If a new category appears, default to the first known category to prevent crashes
         proc_df[col] = proc_df[col].astype(str).apply(
             lambda x: x if x in encoders[col].classes_ else encoders[col].classes_[0]
         )
         proc_df[col] = encoders[col].transform(proc_df[col])
         
-    # 2. Scale Numerical Variables
     proc_df[['DMBTR', 'WRBTR']] = scaler.transform(proc_df[['DMBTR', 'WRBTR']])
     
-    # 3. Get Scikit-Learn Scores
     iso_preds = -iso.score_samples(proc_df)
     lof_preds = -lof.score_samples(proc_df)
     
-    # 4. Get PyTorch Autoencoder Scores
     X_tensor = torch.FloatTensor(proc_df.values)
     with torch.no_grad():
         recon, _ = ae(X_tensor)
         ae_preds = torch.mean((X_tensor - recon)**2, dim=1).numpy()
         
-    # 5. Ensemble Risk Calculation
     norm_ae = np.clip(ae_preds / 5.0, 0, 1)
     norm_iso = np.clip(iso_preds, 0, 1)
     norm_lof = np.clip(lof_preds, 0, 1)
     
     final_scores = (0.5 * norm_ae) + (0.3 * norm_iso) + (0.2 * norm_lof)
-    return final_scores
+    return final_scores, proc_df
 
 def show_dashboard():
     st.title("📊 FinGuard AI: Anomaly Detection Engine")
     st.write(f"Logged in securely as: **{st.session_state.get('user_email')}**")
     
     scaler, encoders, iso, lof, ae = load_ml_models()
-    
     if scaler is None:
-        st.error("🚨 Model files missing! Please ensure you have placed scaler.pkl, encoders.pkl, isolation_forest.pkl, lof.pkl, and autoencoder.pth inside the 'models/saved_models/' folder.")
+        st.error("🚨 Model files missing in 'models/saved_models/'!")
         st.stop()
 
     tab1, tab2 = st.tabs(["📝 Manual Data Entry", "📂 Batch CSV Upload"])
@@ -81,11 +70,11 @@ def show_dashboard():
             with col1:
                 waers = st.text_input("Currency (WAERS)", "USD")
                 bukrs = st.text_input("Company Code (BUKRS)", "1000")
-                dmbtr = st.number_input("Amount in Local Currency (DMBTR)", min_value=0.0, value=500.0)
+                dmbtr = st.number_input("Amount (DMBTR)", min_value=0.0, value=50000.0)
             with col2:
                 ktosl = st.text_input("Transaction Key (KTOSL)", "XYZ")
-                prctr = st.text_input("Profit Center / User ID (PRCTR)", "U123")
-                wrbtr = st.number_input("Amount in Foreign Currency (WRBTR)", min_value=0.0, value=0.0)
+                prctr = st.text_input("User ID (PRCTR)", "U123")
+                wrbtr = st.number_input("Foreign Amount (WRBTR)", min_value=0.0, value=0.0)
             with col3:
                 bschl = st.text_input("Posting Key (BSCHL)", "40")
                 hkont = st.text_input("G/L Account (HKONT)", "100100")
@@ -93,43 +82,58 @@ def show_dashboard():
             submit_manual = st.form_submit_button("Run AI Analysis", use_container_width=True)
             
         if submit_manual:
-            input_data = pd.DataFrame([{
-                'WAERS': waers, 'BUKRS': bukrs, 'KTOSL': ktosl, 'PRCTR': prctr, 
-                'BSCHL': bschl, 'HKONT': hkont, 'DMBTR': dmbtr, 'WRBTR': wrbtr
-            }])
+            input_dict = {'WAERS': waers, 'BUKRS': bukrs, 'KTOSL': ktosl, 'PRCTR': prctr, 'BSCHL': bschl, 'HKONT': hkont, 'DMBTR': dmbtr, 'WRBTR': wrbtr}
+            input_data = pd.DataFrame([input_dict])
             
             with st.spinner("AI is analyzing transaction..."):
-                score = predict_risk(input_data, scaler, encoders, iso, lof, ae)[0]
+                scores, processed_df = predict_risk(input_data, scaler, encoders, iso, lof, ae)
+                score = scores[0]
                 
             risk_label = "Low Risk"
             color = "green"
+            
             if score > 0.4:
                 risk_label = "Medium Risk"
                 color = "orange"
             if score > 0.7:
                 risk_label = "High Risk (Fraud Alert)"
                 color = "red"
-                st.audio("src/utils/buzzer.wav", autoplay=True) # Ensure buzzer.wav is in src/utils
-                # Send Email Alert!
-                send_fraud_alert(st.session_state["user_email"], input_data.to_dict('records')[0])
+                try: st.audio("src/utils/buzzer.wav", autoplay=True)
+                except: pass
+                send_fraud_alert(st.session_state["user_email"], input_dict)
                 st.error("🚨 Fraud Alert sent to your email!")
 
-            # GRAPH 1: Gauge Chart for Risk Score
+            # GRAPH 1: Gauge Chart
             fig1 = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=score,
+                mode="gauge+number", value=score,
                 title={'text': f"Transaction Risk Level: {risk_label}"},
-                gauge={
-                    'axis': {'range': [0, 1]},
-                    'bar': {'color': color},
-                    'steps': [
-                        {'range': [0, 0.4], 'color': "lightgreen"},
-                        {'range': [0.4, 0.7], 'color': "lightyellow"},
-                        {'range': [0.7, 1.0], 'color': "lightcoral"}
-                    ]
-                }
+                gauge={'axis': {'range': [0, 1]}, 'bar': {'color': color},
+                       'steps': [{'range': [0, 0.4], 'color': "lightgreen"},
+                                 {'range': [0.4, 0.7], 'color': "lightyellow"},
+                                 {'range': [0.7, 1.0], 'color': "lightcoral"}]}
             ))
             st.plotly_chart(fig1, use_container_width=True)
+
+            # Explainability & LLM Integration (Triggers on Medium or High risk)
+            if score > 0.4:
+                st.markdown("---")
+                st.subheader("🕵️ Autonomous Investigation")
+                
+                col_a, col_b = st.columns([1, 1])
+                
+                with col_a:
+                    with st.spinner("Generating SHAP Explainability..."):
+                        feature_names = ['WAERS', 'BUKRS', 'KTOSL', 'PRCTR', 'BSCHL', 'HKONT', 'DMBTR', 'WRBTR']
+                        shap_fig, shap_summary = generate_shap_explanation(iso, processed_df, feature_names)
+                        if shap_fig:
+                            st.plotly_chart(shap_fig, use_container_width=True)
+                        else:
+                            st.write(shap_summary)
+                
+                with col_b:
+                    with st.spinner("LLM Agent writing report..."):
+                        report = generate_fraud_report(input_dict, score, shap_summary)
+                        st.info(report)
 
     # --- TAB 2: BATCH CSV UPLOAD ---
     with tab2:
@@ -138,13 +142,12 @@ def show_dashboard():
         
         if uploaded_file is not None:
             df = pd.read_csv(uploaded_file)
-            st.write("Preview of Uploaded Data:", df.head())
+            st.write("Preview:", df.head(3))
             
             if st.button("Run Batch Analysis"):
-                with st.spinner("Processing thousands of transactions through the Ensemble Model..."):
-                    # We only need the 8 features for prediction
+                with st.spinner("Processing transactions..."):
                     features_df = df[['WAERS', 'BUKRS', 'KTOSL', 'PRCTR', 'BSCHL', 'HKONT', 'DMBTR', 'WRBTR']]
-                    scores = predict_risk(features_df, scaler, encoders, iso, lof, ae)
+                    scores, _ = predict_risk(features_df, scaler, encoders, iso, lof, ae)
                     
                     df['Risk_Score'] = scores
                     df['Risk_Category'] = pd.cut(df['Risk_Score'], bins=[-1, 0.4, 0.7, 2], labels=['Low', 'Medium', 'High'])
@@ -154,37 +157,22 @@ def show_dashboard():
                         st.error(f"🚨 {high_risk_count} High-Risk transactions detected!")
                         send_fraud_alert(st.session_state["user_email"], f"Batch analysis found {high_risk_count} critical anomalies.")
 
-                st.success("Analysis Complete!")
-                
                 col1, col2 = st.columns(2)
-                
-                # GRAPH 2: Pie Chart of Risk Distribution
                 with col1:
                     risk_counts = df['Risk_Category'].value_counts().reset_index()
                     risk_counts.columns = ['Risk Category', 'Count']
                     fig2 = px.pie(risk_counts, values='Count', names='Risk Category', 
-                                  title="Risk Distribution Across Dataset",
-                                  color='Risk Category',
-                                  color_discrete_map={'Low': 'green', 'Medium': 'orange', 'High': 'red'})
+                                  title="Risk Distribution",
+                                  color='Risk Category', color_discrete_map={'Low': 'green', 'Medium': 'orange', 'High': 'red'})
                     st.plotly_chart(fig2, use_container_width=True)
-                
-                # GRAPH 3: Scatter Plot (Transaction Amount vs Risk Score)
                 
                 with col2:
                     fig3 = px.scatter(df, x='DMBTR', y='Risk_Score', color='Risk_Category',
-                                      title="Transaction Amount vs. AI Risk Score",
-                                      hover_data=['PRCTR', 'WAERS'],
+                                      title="Amount vs Risk", hover_data=['PRCTR'],
                                       color_discrete_map={'Low': 'green', 'Medium': 'orange', 'High': 'red'})
                     st.plotly_chart(fig3, use_container_width=True)
 
-                st.write("### Detailed Results")
                 st.dataframe(df.sort_values(by="Risk_Score", ascending=False))
                 
-                # --- CSV EXPORT FEATURE ---
                 csv_export = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Download Analyzed Report (CSV)",
-                    data=csv_export,
-                    file_name="FinGuard_Risk_Report.csv",
-                    mime="text/csv",
-                )
+                st.download_button("📥 Download Risk Report (CSV)", data=csv_export, file_name="FinGuard_Report.csv", mime="text/csv")
