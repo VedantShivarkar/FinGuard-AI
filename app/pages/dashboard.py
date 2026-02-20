@@ -62,7 +62,7 @@ def show_dashboard():
 
     tab1, tab2 = st.tabs(["📝 Manual Data Entry", "📂 Batch CSV Upload"])
 
-    # --- TAB 1: MANUAL ENTRY ---
+   # --- TAB 1: MANUAL ENTRY ---
     with tab1:
         st.subheader("Analyze Single Transaction")
         with st.form("manual_input_form"):
@@ -70,7 +70,8 @@ def show_dashboard():
             with col1:
                 waers = st.text_input("Currency (WAERS)", "USD")
                 bukrs = st.text_input("Company Code (BUKRS)", "1000")
-                dmbtr = st.number_input("Amount (DMBTR)", min_value=0.0, value=50000.0)
+                # Intentionally huge default value to trigger a high-risk alert for testing!
+                dmbtr = st.number_input("Amount (DMBTR)", min_value=0.0, value=9999999.0) 
             with col2:
                 ktosl = st.text_input("Transaction Key (KTOSL)", "XYZ")
                 prctr = st.text_input("User ID (PRCTR)", "U123")
@@ -98,12 +99,14 @@ def show_dashboard():
             if score > 0.7:
                 risk_label = "High Risk (Fraud Alert)"
                 color = "red"
-                try: st.audio("src/utils/buzzer.wav", autoplay=True)
-                except: pass
-                send_fraud_alert(st.session_state["user_email"], input_dict)
-                st.error("🚨 Fraud Alert sent to your email!")
+                try: 
+                    st.audio("src/utils/buzzer.wav", autoplay=True)
+                except: 
+                    pass
+                # Temporarily disable email sending if it's causing the app to hang
+                # send_fraud_alert(st.session_state["user_email"], input_dict)
 
-            # GRAPH 1: Gauge Chart
+            # GRAPH 1: Gauge Chart (Always displays)
             fig1 = go.Figure(go.Indicator(
                 mode="gauge+number", value=score,
                 title={'text': f"Transaction Risk Level: {risk_label}"},
@@ -114,11 +117,14 @@ def show_dashboard():
             ))
             st.plotly_chart(fig1, use_container_width=True)
 
-            # Explainability & LLM Integration (Triggers on Medium or High risk)
-            if score > 0.4:
-                st.markdown("---")
-                st.subheader("🕵️ Autonomous Investigation")
-                
+            # Explainability & LLM Integration
+            st.markdown("---")
+            st.subheader("🕵️ Autonomous Investigation")
+            
+            if score <= 0.4:
+                st.success("✅ Transaction falls within normal behavioral parameters. No autonomous investigation required.")
+            else:
+                st.warning("⚠️ Abnormal transaction detected. Initiating AI audit protocols...")
                 col_a, col_b = st.columns([1, 1])
                 
                 with col_a:
@@ -128,7 +134,7 @@ def show_dashboard():
                         if shap_fig:
                             st.plotly_chart(shap_fig, use_container_width=True)
                         else:
-                            st.write(shap_summary)
+                            st.error(f"SHAP Error: {shap_summary}") # Print exact error if SHAP fails
                 
                 with col_b:
                     with st.spinner("LLM Agent writing report..."):
