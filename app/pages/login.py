@@ -29,7 +29,7 @@ def show_login_page():
         st.markdown("---")
         # Google Login Button
         google_url = get_google_login_url()
-        st.markdown(f'<a href="{google_url}" target="_self"><button style="width:100%; padding:10px; background-color:#4285F4; color:white; border:none; border-radius:5px; cursor:pointer;">🌐 Continue with Google</button></a>', unsafe_allow_html=True)
+        st.link_button("🌐 Continue with Google", google_url, use_container_width=True)
 
     # --- SIGN UP TAB (OTP Flow) ---
     with tab2:
