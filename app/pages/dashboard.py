@@ -82,7 +82,7 @@ def show_dashboard():
                 
             submit_manual = st.form_submit_button("Run AI Analysis", use_container_width=True)
             
-       if submit_manual:
+        if submit_manual:
             input_dict = {'WAERS': waers, 'BUKRS': bukrs, 'KTOSL': ktosl, 'PRCTR': prctr, 'BSCHL': bschl, 'HKONT': hkont, 'DMBTR': dmbtr, 'WRBTR': wrbtr}
             input_data = pd.DataFrame([input_dict])
             
